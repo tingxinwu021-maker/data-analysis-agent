@@ -1,0 +1,2 @@
+# 统一换行符，避免 Windows/Linux 之间反复转换
+* text=auto

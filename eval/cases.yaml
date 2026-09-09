@@ -1,0 +1,48 @@
+version: 1
+# golden-SQL 回归用例：question + 正确答案 SQL。
+# 评测时：执行 golden SQL 得期望结果，再让 agent 生成 SQL 并执行，对比两者结果。
+# 改模型 / 提示词 / 语义层后，跑 scripts/eval.py 验证不退化。
+cases:
+  - question: 每个国家的活跃用户数，按从高到低排列
+    sql: |
+      SELECT u.country, count(DISTINCT e.user_id) AS active_users
+      FROM events e JOIN users u ON e.user_id = u.user_id
+      GROUP BY u.country ORDER BY active_users DESC
+  - question: 每个套餐分别有多少用户？
+    sql: |
+      SELECT plan, count(*) AS user_count FROM users GROUP BY plan ORDER BY user_count DESC
+  - question: 每个设备的用户数是多少？
+    sql: |
+      SELECT device, count(*) AS user_count FROM users GROUP BY device ORDER BY user_count DESC
+  - question: 每个渠道的活跃用户数
+    sql: |
+      SELECT u.channel, count(DISTINCT e.user_id) AS active_users
+      FROM events e JOIN users u ON e.user_id = u.user_id
+      GROUP BY u.channel ORDER BY active_users DESC
+  - question: 注册到购买的转化漏斗，各步人数
+    sql: |
+      SELECT event_name, count(DISTINCT user_id) AS users
+      FROM events
+      WHERE event_name IN ('signup', 'login', 'feature_used', 'purchase')
+      GROUP BY event_name
+      ORDER BY CASE event_name
+        WHEN 'signup' THEN 1 WHEN 'login' THEN 2 WHEN 'feature_used' THEN 3 ELSE 4 END
+  - question: 次留留存率（注册次日仍活跃的用户占比），按首次活跃日分组
+    sql: |
+      WITH first_active AS (
+        SELECT user_id, MIN(DATE(event_time)) AS first_day FROM events GROUP BY user_id
+      ),
+      day_after AS (
+        SELECT DISTINCT user_id, DATE(event_time) AS active_day FROM events
+      )
+      SELECT fa.first_day, count(DISTINCT da.user_id) AS retained,
+             count(DISTINCT fa.user_id) AS cohort,
+             round(count(DISTINCT da.user_id) * 1.0 / count(DISTINCT fa.user_id), 3) AS retention
+      FROM first_active fa
+      LEFT JOIN day_after da
+        ON da.user_id = fa.user_id AND da.active_day = DATE_ADD(fa.first_day, INTERVAL 1 DAY)
+      GROUP BY fa.first_day ORDER BY fa.first_day
+  - question: 日活最高的是哪一天？
+    sql: |
+      SELECT DATE(event_time) AS day, count(DISTINCT user_id) AS dau
+      FROM events GROUP BY 1 ORDER BY dau DESC LIMIT 1

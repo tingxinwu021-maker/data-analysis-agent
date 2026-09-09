@@ -1,0 +1,180 @@
+version: 1
+
+# ===== 数据模型（表/字段）=====
+# 这是给 LLM 的「数据字典」：它只能通过这里的描述理解你的数据。
+# 字段的 synonyms 用于把业务黑话（如「日活」）映射到真实字段/指标。
+models:
+  - name: users
+    description: 用户维表，每行一个注册用户。用于按用户属性（国家/设备/套餐/渠道）做分群分析。
+    columns:
+      - name: user_id
+        type: integer
+        description: 用户唯一 ID
+        synonyms: [用户ID, uid]
+      - name: signup_date
+        type: date
+        description: 注册日期
+        synonyms: [注册日期, 注册时间, 新增日期]
+      - name: country
+        type: varchar
+        description: 国家/地区（ISO 两位码）
+        synonyms: [国家, 地区, 区域]
+      - name: device
+        type: varchar
+        description: 设备类型（ios / android / web / desktop）
+        synonyms: [设备, 终端]
+      - name: plan
+        type: varchar
+        description: 套餐类型（free / pro / enterprise）
+        synonyms: [套餐, 版本, 付费等级]
+      - name: channel
+        type: varchar
+        description: 获客渠道（organic / ads / referral / email）
+        synonyms: [渠道, 来源]
+
+  - name: events
+    description: >
+      事件事实表，每行一个埋点事件，是行为分析的主要来源。
+      时间维度约定：按天用 DATE(event_time)，按周用 YEARWEEK(event_time)，按月用 DATE_FORMAT(event_time, '%Y-%m-01')。
+    columns:
+      - name: event_id
+        type: integer
+        description: 事件唯一 ID
+      - name: user_id
+        type: integer
+        description: 触发事件的用户 ID，关联 users.user_id
+        synonyms: [用户ID]
+      - name: event_name
+        type: varchar
+        description: 事件名（signup / login / page_view / feature_used / purchase / invite_sent / upgrade）
+        synonyms: [事件, 行为, 动作]
+      - name: event_time
+        type: timestamp
+        description: 事件发生时间
+        synonyms: [时间, 发生时间]
+      - name: session_id
+        type: varchar
+        description: 会话 ID，关联 sessions.session_id
+      - name: page
+        type: varchar
+        description: 触发页面
+        synonyms: [页面]
+      - name: feature
+        type: varchar
+        description: 使用的功能点
+        synonyms: [功能, 模块]
+
+  - name: sessions
+    description: 会话表，每行一次会话。
+    columns:
+      - name: session_id
+        type: varchar
+        description: 会话唯一 ID
+      - name: user_id
+        type: integer
+        description: 会话所属用户 ID，关联 users.user_id
+        synonyms: [用户ID]
+      - name: started_at
+        type: timestamp
+        description: 会话开始时间
+      - name: ended_at
+        type: timestamp
+        description: 会话结束时间
+      - name: duration_sec
+        type: integer
+        description: 会话时长（秒）
+        synonyms: [会话时长]
+
+# ===== 业务指标 =====
+# expression 是「聚合表达式」，null 表示该指标需要特殊写法（自连接等），见 examples。
+metrics:
+  - name: dau
+    description: 日活跃用户数：某天内有任意事件的去重用户数
+    synonyms: [日活, DAU, 活跃用户数, 每日活跃]
+    entity: events
+    expression: count(distinct user_id)
+  - name: mau
+    description: 月活跃用户数：某月内有任意事件的去重用户数
+    synonyms: [月活, MAU, 月度活跃]
+    entity: events
+    expression: count(distinct user_id)
+  - name: new_users
+    description: 新增用户数：注册日期在某天的用户数
+    synonyms: [新增用户, 新注册, 注册数, 新增]
+    entity: users
+    expression: count(*)
+  - name: event_count
+    description: 事件总数
+    synonyms: [事件数, 事件量, 行为次数]
+    entity: events
+    expression: count(*)
+  - name: session_count
+    description: 会话总数
+    synonyms: [会话数, 会话量]
+    entity: sessions
+    expression: count(*)
+  - name: avg_session_duration
+    description: 平均会话时长（秒）
+    synonyms: [人均会话时长, 平均会话时长]
+    entity: sessions
+    expression: avg(duration_sec)
+  - name: retention
+    description: 留存率：某 cohort 注册后第 N 天仍活跃的用户占比，需自连接实现，见 examples 中的次留示例
+    synonyms: [留存, 留存率, 次留, 次日留存]
+    entity: events
+    expression: null
+  - name: funnel
+    description: 转化漏斗：按事件顺序统计各步去重用户数，见 examples 中的漏斗示例
+    synonyms: [漏斗, 转化漏斗, 转化率]
+    entity: events
+    expression: null
+
+# ===== 精选示例（question → SQL，作为 few-shot 教学与 RAG 素材）=====
+examples:
+  - question: 最近7天每天的日活是多少？
+    sql: |
+      SELECT DATE(event_time) AS day, count(DISTINCT user_id) AS dau
+      FROM events
+      WHERE event_time >= CURDATE() - INTERVAL 7 DAY
+      GROUP BY 1
+      ORDER BY 1
+  - question: 每个国家的活跃用户数，按从高到低排列
+    sql: |
+      SELECT u.country, count(DISTINCT e.user_id) AS active_users
+      FROM events e
+      JOIN users u ON e.user_id = u.user_id
+      GROUP BY u.country
+      ORDER BY active_users DESC
+  - question: 上个月新增了多少用户？
+    sql: |
+      SELECT count(*) AS new_users
+      FROM users
+      WHERE signup_date >= DATE_SUB(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
+        AND signup_date < DATE_FORMAT(CURDATE(), '%Y-%m-01')
+  - question: 注册到购买的转化漏斗，各步人数
+    sql: |
+      SELECT event_name, count(DISTINCT user_id) AS users
+      FROM events
+      WHERE event_name IN ('signup', 'login', 'feature_used', 'purchase')
+      GROUP BY event_name
+      ORDER BY CASE event_name
+        WHEN 'signup' THEN 1 WHEN 'login' THEN 2
+        WHEN 'feature_used' THEN 3 ELSE 4 END
+  - question: 次留留存率（注册次日仍活跃的用户占比），按首次活跃日分组
+    sql: |
+      WITH first_active AS (
+        SELECT user_id, MIN(DATE(event_time)) AS first_day
+        FROM events GROUP BY user_id
+      ),
+      day_after AS (
+        SELECT DISTINCT user_id, DATE(event_time) AS active_day FROM events
+      )
+      SELECT fa.first_day,
+             count(DISTINCT da.user_id) AS retained,
+             count(DISTINCT fa.user_id) AS cohort,
+             round(count(DISTINCT da.user_id) * 1.0 / count(DISTINCT fa.user_id), 3) AS retention
+      FROM first_active fa
+      LEFT JOIN day_after da
+        ON da.user_id = fa.user_id AND da.active_day = DATE_ADD(fa.first_day, INTERVAL 1 DAY)
+      GROUP BY fa.first_day
+      ORDER BY fa.first_day
